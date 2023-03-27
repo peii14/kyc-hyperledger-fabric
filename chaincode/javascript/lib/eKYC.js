@@ -1,330 +1,146 @@
+
 const { Contract } = require('fabric-contract-api');
-const ClientIdentity = require('fabric-shim').ClientIdentity;
+const crypto = require('crypto');
+const argon2 = require('argon2');
 
-const initialClientData = require('../data/initialClientData.json');
-const initialFIData = require('../data/initialFIData.json');
-
-class eKYC extends Contract {
-
-    constructor() {
-        super();
-        this.nextClientId = 1;
-        this.nextFiId = 1;
+class UserProfile {
+    constructor(userId, ethereumAddress) {
+      this.userId = userId;
+      this.ethereumAddress = ethereumAddress;
+      this.type = 'UserProfile';
     }
+  }
 
-    /**
-     *
-     * @param {Context} ctx
-     * @dev initiate ledger storing initial data
-     */
+class KycChaincode extends Contract {
+
     async initLedger(ctx) {
-        console.info('============= START : Initialize Ledger ===========');
-        const clients = initialClientData;
-        const fis = initialFIData;
-
-        for (const client of clients) {
-            const newClientId = 'CLIENT' + this.nextClientId;
-            const whoRegistered = client.whoRegistered.ledgerUser;
-
-            client.docType = 'client';
-            await ctx.stub.putState(newClientId, Buffer.from(JSON.stringify(client)));
-            console.info('Added <--> ', client);
-            this.nextClientId++;
-
-            // Include who registered the client in the list of FI approved
-            const clientFiIndexKey = await ctx.stub.createCompositeKey('clientId~fiId', [newClientId, whoRegistered]);
-            const fiClientIndexKey = await ctx.stub.createCompositeKey('fiId~clientId', [whoRegistered, newClientId]);
-            await ctx.stub.putState(clientFiIndexKey, Buffer.from('\u0000'));
-            await ctx.stub.putState(fiClientIndexKey, Buffer.from('\u0000'));
-        }
-
-        for (const fi of fis) {
-            fi.docType = 'fi';
-            await ctx.stub.putState('FI' + this.nextFiId, Buffer.from(JSON.stringify(fi)));
-            console.info('Added <--> ', fi);
-            this.nextFiId++;
-        }
-
-        console.info('============= END : Initialize Ledger ===========');
+        console.info('Initializing the ledger');
     }
 
-    /**
-     *
-     * @private
-     * @param {Context} ctx
-     * @dev extracting the CA ID
-     * @returns {string} CA ID
-     */
-    getCallerId(ctx) {
-        const cid = new ClientIdentity(ctx.stub);
-        const idString = cid.getID();
-        const idParams = idString.toString().split('::');
-        return idParams[1].split('CN=')[1];
+    async submitKycData(ctx, customerId, kycData) {
+        const encryptedData = this._encryptData(kycData);
+        const privateData = ctx.stub.createTransientMap();
+        privateData.set(customerId, encryptedData);
+        await ctx.stub.putPrivateData('customerPrivateData', customerId, Buffer.from(JSON.stringify(privateData)));
     }
 
-    /**
-     *
-     * @private
-     * @param {Context} ctx
-     * @param {string} clientId
-     * @dev tell if the caller is who registered client parameter
-     * @returns {boolean} is who registered or not, return null if client does not exists or does not have data
-     */
-    async isWhoRegistered(ctx, clientId) {
-        const clientAsBytes = await ctx.stub.getState(clientId);
-        if (!clientAsBytes || clientAsBytes.length === 0) {
-            return null;
+    async getKycData(ctx, customerId, financialInstitution, peerMSPID) {
+        if (!this._isFinancialInstitution(financialInstitution, peerMSPID)) {
+            throw new Error('Access denied: Only designated financial institutions can access KYC data');
         }
-        const clientData = JSON.parse(clientAsBytes.toString());
-        const callerId = this.getCallerId(ctx);
 
-        return clientData.whoRegistered.ledgerUser === callerId;
+        const privateDataBuffer = await ctx.stub.getPrivateData('customerPrivateData', customerId);
+        if (!privateDataBuffer || privateDataBuffer.length === 0) {
+            throw new Error(`No KYC data found for customer: ${customerId}`);
+        }
+
+        const encryptedData = privateDataBuffer.toString('utf-8');
+        return this._decryptData(encryptedData);
     }
 
-    /**
-     *
-     * @param {Context} ctx
-     * @param {object} clientData
-     * @dev create a new client
-     * @returns {string} new client ID
-     */
-    async createClient(ctx, clientData) {
-        console.info('============= START : Create client ===========');
+    async requestValidation(ctx, customerId, walletAddress, currentStatus, email, password) {
+        const hashedPassword = await argon2.hash(password);
 
-        clientData = JSON.parse(clientData);
-        const callerId = this.getCallerId(ctx);
-
-        if (clientData.whoRegistered.ledgerUser !== callerId) {
-            return null;
-        }
-
-        const client = {
-            docType: 'client',
-            ...clientData
+        const validationRequest = {
+            customerId: customerId,
+            walletAddress: walletAddress,
+            status: currentStatus,
+            timestamp: new Date().toISOString(),
         };
 
-        const newId = 'CLIENT' + this.nextClientId;
-        this.nextClientId++;
+        await ctx.stub.putState(customerId, Buffer.from(JSON.stringify(validationRequest)));
 
-        await ctx.stub.putState(newId, Buffer.from(JSON.stringify(client)));
+        // Register the client account
+        const clientAccount = {
+            email: email,
+            password: hashedPassword,
+            customerId: customerId,
+        };
 
-        // Include who registered the client in the list of FI approved
-        const clientFiIndexKey = await ctx.stub.createCompositeKey('clientId~fiId', [newId, callerId]);
-        const fiClientIndexKey = await ctx.stub.createCompositeKey('fiId~clientId', [callerId, newId]);
-        await ctx.stub.putState(clientFiIndexKey, Buffer.from('\u0000'));
-        await ctx.stub.putState(fiClientIndexKey, Buffer.from('\u0000'));
-
-        console.info('============= END : Create client ===========');
-
-        return newId;
+        await ctx.stub.putState(`account_${email}`, Buffer.from(JSON.stringify(clientAccount)));
     }
 
-    /**
-     *
-     * @param {Context} ctx
-     * @param {string} clientId
-     * @param {Array} fields
-     * @dev get specified fields of client data when called by an FI
-     * @returns {object} client data as an object
-     */
-    async getClientData(ctx, clientId, fields) {
-
-        const clientAsBytes = await ctx.stub.getState(clientId);
-        if (!clientAsBytes || clientAsBytes.length === 0) {
-            return null;
+    async getRequestValidation(ctx, customerId) {
+        const validationRequestAsBytes = await ctx.stub.getState(customerId);
+        if (!validationRequestAsBytes || validationRequestAsBytes.length === 0) {
+            throw new Error(`No validation request found for customer: ${customerId}`);
         }
-
-        const clientData = JSON.parse(clientAsBytes.toString());
-        const callerId = this.getCallerId(ctx);
-
-        // Check caller is who registered
-        if (clientData.whoRegistered.ledgerUser !== callerId) {
-
-            // If caller is not who registered, check if caller is approved
-            const relations = await this.getRelationByFi(ctx, callerId);
-            if (!relations.includes(clientId)) {
-                return null;
-            }
-        }
-
-        // Get only requested fields
-        fields = fields.split(',').map(field => field.trim());
-
-        let result = {};
-        for (const field of fields) {
-            if (clientData.hasOwnProperty(field)) {
-                result[field] = clientData[field];
-            }
-        }
-        return result;
+        return validationRequestAsBytes.toString('utf-8');
     }
 
-    /**
-     *
-     * @param {Context} ctx
-     * @dev get financial insitution data
-     * @returns {object} FI data as an object
-     */
-    async getFinancialInstitutionData(ctx) {
-
-        const callerId = this.getCallerId(ctx);
-
-        const fiAsBytes = await ctx.stub.getState(callerId);
-        if (!fiAsBytes || fiAsBytes.length === 0) {
-            return null;
-        }
-
-        return fiAsBytes.toString();
+    _encryptData(data) {
+        const cipher = crypto.createCipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_IV);
+        let encrypted = cipher.update(data, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        return encrypted;
     }
 
-    /**
-     *
-     * @param {Context} ctx
-     * @param {string} clientId
-     * @param {string} fiId
-     * @dev approve FI to access client data
-     * @returns {boolean} return true if approved
-     */
-    async approve(ctx, clientId, fiId) {
-        console.info('======== START : Approve financial institution for client data access ==========');
+    _decryptData(encryptedData) {
+        const decipher = crypto.createDecipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_IV);
+        let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    }
+    async _isFinancialInstitution(ctx, institution, peerMSPID) {
+        const institutionsKey = 'approvedFinancialInstitutions';
+        const approvedInstitutionsBytes = await ctx.stub.getState(institutionsKey);
+        let approvedFinancialInstitutions = [];
 
-        const res = await this.isWhoRegistered(ctx, clientId);
-
-        if (!res) {
-            return false;
+        if (approvedInstitutionsBytes && approvedInstitutionsBytes.length > 0) {
+            approvedFinancialInstitutions = JSON.parse(approvedInstitutionsBytes.toString());
         }
 
-        const clientFiIndexKey = await ctx.stub.createCompositeKey('clientId~fiId', [clientId, fiId]);
-        const fiClientIndexKey = await ctx.stub.createCompositeKey('fiId~clientId', [fiId, clientId]);
-
-        if (!clientFiIndexKey) {
-            throw new Error('Composite key: clientFiIndexKey is null');
-        }
-
-        if (!fiClientIndexKey) {
-            throw new Error('Composite key: fiClientIndexKey is null');
-        }
-
-        await ctx.stub.putState(clientFiIndexKey, Buffer.from('\u0000'));
-        await ctx.stub.putState(fiClientIndexKey, Buffer.from('\u0000'));
-        console.info('======== END : Approve financial institution for client data access =========');
-
-        return true;
+        return approvedFinancialInstitutions.some(
+            (fi) => fi.institution === institution && fi.mspid === peerMSPID
+        );
     }
 
-    /**
-     *
-     * @param {Context} ctx
-     * @param {string} clientId
-     * @param {Array} fields
-     * @dev remove FI access data approval
-     * @returns {boolean} return true if removed
-     */
-    async remove(ctx, clientId, fiId) {
-        console.info('======== START : Remove financial institution for client data access ==========');
+    async addApprovedFinancialInstitution(ctx, institution, mspid) {
+        const institutionsKey = 'approvedFinancialInstitutions';
+        const approvedInstitutionsBytes = await ctx.stub.getState(institutionsKey);
+        let approvedFinancialInstitutions = [];
 
-        if (!this.isWhoRegistered(ctx, clientId)) {
-            return false;
+        if (approvedInstitutionsBytes && approvedInstitutionsBytes.length > 0) {
+            approvedFinancialInstitutions = JSON.parse(approvedInstitutionsBytes.toString());
         }
 
-        const clientFiIterator = await ctx.stub.getStateByPartialCompositeKey('clientId~fiId', [clientId, fiId]);
-        const clientFiResult = await clientFiIterator.next();
-        if (clientFiResult.value) {
-            await ctx.stub.deleteState(clientFiResult.value.key);
-        }
-
-        const fiClientIterator = await ctx.stub.getStateByPartialCompositeKey('fiId~clientId', [fiId, clientId]);
-        const fiClientResult = await fiClientIterator.next();
-        if (fiClientResult.value) {
-            await ctx.stub.deleteState(fiClientResult.value.key);
-        }
-
-        console.info('======== END : Remove financial institution for client data access =========');
-
-        return true;
+        approvedFinancialInstitutions.push({ institution, mspid });
+        await ctx.stub.putState(institutionsKey, Buffer.from(JSON.stringify(approvedFinancialInstitutions)));
     }
-
-    /**
-     *
-     * @private
-     * @param {Context} ctx
-     * @param {Iterator} relationResultsIterator
-     * @dev iterate a composite key iterator
-     * @returns {Array} list of results of the iteration
-     */
-    async getRelationsArray(ctx, relationResultsIterator) {
-        let relationsArray = [];
-        while (true) {
-
-            const responseRange = await relationResultsIterator.next();
-
-            if (!responseRange || !responseRange.value) {
-                return JSON.stringify(relationsArray);
-            }
-
-            const { attributes } = await ctx.stub.splitCompositeKey(responseRange.value.key);
-
-            relationsArray.push(attributes[1]);
+    async removeApprovedFinancialInstitution(ctx, institution, mspid) {
+        const institutionsKey = 'approvedFinancialInstitutions';
+        const approvedInstitutionsBytes = await ctx.stub.getState(institutionsKey);
+        let approvedFinancialInstitutions = [];
+        if (approvedInstitutionsBytes && approvedInstitutionsBytes.length > 0) {
+            approvedFinancialInstitutions = JSON.parse(approvedInstitutionsBytes.toString());
         }
+        approvedFinancialInstitutions = approvedFinancialInstitutions.filter(
+            (fi) => !(fi.institution === institution && fi.mspid === mspid)
+        );
+        await ctx.stub.putState(institutionsKey, Buffer.from(JSON.stringify(approvedFinancialInstitutions)));
     }
-
-    /**
-     *
-     * @param {Context} ctx
-     * @param {string} clientId
-     * @dev get a list of approved FIs
-     * @returns {Array} list of approved FIs
-     */
-    async getRelationByClient(ctx, clientId) {
-        if (!this.isWhoRegistered(ctx, clientId)) {
-            return null;
+    async getApprovedFinancialInstitutions(ctx) {
+        const institutionsKey = 'approvedFinancialInstitutions';
+        const approvedInstitutionsBytes = await ctx.stub.getState(institutionsKey);
+        if (!approvedInstitutionsBytes || approvedInstitutionsBytes.length === 0) {
+            return 'No approved financial institutions found';
         }
 
-        const relationResultsIterator = await ctx.stub.getStateByPartialCompositeKey('clientId~fiId', [clientId]);
-        const result = await this.getRelationsArray(ctx, relationResultsIterator);
-
-        return result;
+        return approvedInstitutionsBytes.toString('utf-8');
     }
-
-    /**
-     *
-     * @param {Context} ctx
-     * @dev get a list of clients who approved the caller FI
-     * @returns {Array} list of clients who approved FI
-     */
-    async getRelationByFi(ctx) {
-        const callerID = this.getCallerId(ctx);
-
-        const relationResultsIterator = await ctx.stub.getStateByPartialCompositeKey('fiId~clientId', [callerID]);
-        const result = await this.getRelationsArray(ctx, relationResultsIterator);
-
-        return result;
+    async createUserProfile(ctx, userId, ethereumAddress) {
+        const userProfile = new UserProfile(userId, ethereumAddress);
+        await ctx.stub.putState(userId, Buffer.from(JSON.stringify(userProfile)));
     }
-
-    /**
-     *
-     * @param {Context} ctx
-     * @dev get a list of all data stored in the ledger
-     * @returns {Array} array of data of the ledger
-     */
-    async queryAllData(ctx) {
-        const startKey = '';
-        const endKey = '';
-        const allResults = [];
-        for await (const { key, value } of ctx.stub.getStateByRange(startKey, endKey)) {
-            const strValue = Buffer.from(value).toString('utf8');
-            let record;
-            try {
-                record = JSON.parse(strValue);
-            } catch (err) {
-                console.info(err);
-                record = strValue;
-            }
-            allResults.push({ Key: key, Record: record });
+    
+    async getUserProfile(ctx, userId) {
+        const userProfileBytes = await ctx.stub.getState(userId);
+        if (!userProfileBytes || userProfileBytes.length === 0) {
+            throw new Error(`UserProfile ${userId} does not exist`);
         }
-        console.info(allResults);
-        return JSON.stringify(allResults);
+        return JSON.parse(userProfileBytes.toString());
     }
 }
 
-module.exports = eKYC;
+module.exports = KycChaincode;
+
