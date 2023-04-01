@@ -1,20 +1,21 @@
 
 const { Contract } = require('fabric-contract-api');
 const crypto = require('crypto');
-const argon2 = require('argon2');
+// const argon2 = require('argon2');
 
 class UserProfile {
     constructor(userId, ethereumAddress) {
-      this.userId = userId;
-      this.ethereumAddress = ethereumAddress;
-      this.type = 'UserProfile';
+        this.userId = userId;
+        this.ethereumAddress = ethereumAddress;
+        this.type = 'UserProfile';
     }
-  }
+}
 
 class KycChaincode extends Contract {
 
     async initLedger(ctx) {
         console.info('Initializing the ledger');
+
     }
 
     async submitKycData(ctx, customerId, kycData) {
@@ -38,32 +39,37 @@ class KycChaincode extends Contract {
         return this._decryptData(encryptedData);
     }
 
-    async requestValidation(ctx, customerId, walletAddress, currentStatus, email, password) {
-        const hashedPassword = await argon2.hash(password);
+    async requestValidation(ctx, walletAddress, currentStatus) {
+        // const hashedPassword = await argon2.hash(password,{
+        //     salt: saltBuf,
+        //     type: argon2.argon2id,
+        //     memoryCost: 2**16,
+        //     hashLength: 32,
+        //     parallelism: 1,
+        //     timeCost: 3,
+        //     saltLength: 32,
+        // });
 
         const validationRequest = {
-            customerId: customerId,
-            walletAddress: walletAddress,
             status: currentStatus,
             timestamp: new Date().toISOString(),
         };
 
-        await ctx.stub.putState(customerId, Buffer.from(JSON.stringify(validationRequest)));
+        await ctx.stub.putState(walletAddress, Buffer.from(JSON.stringify(validationRequest)));
 
-        // Register the client account
-        const clientAccount = {
-            email: email,
-            password: hashedPassword,
-            customerId: customerId,
-        };
+        // // Register the client account
+        // const clientAccount = {
+        //     password: hashedPassword,
+        //     customerId: customerId,
+        // };
 
-        await ctx.stub.putState(`account_${email}`, Buffer.from(JSON.stringify(clientAccount)));
+        // await ctx.stub.putState(Buffer.from(JSON.stringify(clientAccount)));
     }
 
-    async getRequestValidation(ctx, customerId) {
-        const validationRequestAsBytes = await ctx.stub.getState(customerId);
+    async getRequestValidation(ctx, walletAddress) {
+        const validationRequestAsBytes = await ctx.stub.getState(walletAddress);
         if (!validationRequestAsBytes || validationRequestAsBytes.length === 0) {
-            throw new Error(`No validation request found for customer: ${customerId}`);
+            throw new Error(`No validation request found for customer: ${walletAddress}`);
         }
         return validationRequestAsBytes.toString('utf-8');
     }
@@ -125,14 +131,14 @@ class KycChaincode extends Contract {
         if (!approvedInstitutionsBytes || approvedInstitutionsBytes.length === 0) {
             return 'No approved financial institutions found';
         }
-
-        return approvedInstitutionsBytes.toString('utf-8');
+        return JSON.parse(approvedInstitutionsBytes.toString());
     }
     async createUserProfile(ctx, userId, ethereumAddress) {
         const userProfile = new UserProfile(userId, ethereumAddress);
         await ctx.stub.putState(userId, Buffer.from(JSON.stringify(userProfile)));
+        return JSON.stringify(userProfile);
     }
-    
+
     async getUserProfile(ctx, userId) {
         const userProfileBytes = await ctx.stub.getState(userId);
         if (!userProfileBytes || userProfileBytes.length === 0) {
