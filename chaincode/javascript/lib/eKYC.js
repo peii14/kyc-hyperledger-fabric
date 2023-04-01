@@ -75,6 +75,7 @@ class KycChaincode extends Contract {
     }
 
     _encryptData(data) {
+        // TODO: define enryption key and initialization vector
         const cipher = crypto.createCipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_IV);
         let encrypted = cipher.update(data, 'utf8', 'hex');
         encrypted += cipher.final('hex');
@@ -82,6 +83,8 @@ class KycChaincode extends Contract {
     }
 
     _decryptData(encryptedData) {
+        // TODO: define enryption key and initialization vector
+
         const decipher = crypto.createDecipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_IV);
         let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
