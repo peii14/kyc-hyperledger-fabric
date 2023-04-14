@@ -1,7 +1,5 @@
 
 const { Contract } = require('fabric-contract-api');
-const crypto = require('crypto');
-// const argon2 = require('argon2');
 
 class UserProfile {
     constructor(userId, ethereumAddress) {
@@ -15,14 +13,10 @@ class KycChaincode extends Contract {
 
     async initLedger(ctx) {
         console.info('Initializing the ledger');
-
     }
 
-    async submitKycData(ctx, customerId, kycData) {
-        const encryptedData = this._encryptData(kycData);
-        const privateData = ctx.stub.createTransientMap();
-        privateData.set(customerId, encryptedData);
-        await ctx.stub.putPrivateData('customerPrivateData', customerId, Buffer.from(JSON.stringify(privateData)));
+    async submitKycData(ctx, customerId, encryptedKycData) {
+        await ctx.stub.putPrivateData('customerPrivateData', customerId, Buffer.from(encryptedKycData));
     }
 
     async getKycData(ctx, customerId, financialInstitution, peerMSPID) {
@@ -36,34 +30,17 @@ class KycChaincode extends Contract {
         }
 
         const encryptedData = privateDataBuffer.toString('utf-8');
-        return this._decryptData(encryptedData);
+        return encryptedData;
     }
 
     async requestValidation(ctx, walletAddress, currentStatus) {
-        // const hashedPassword = await argon2.hash(password,{
-        //     salt: saltBuf,
-        //     type: argon2.argon2id,
-        //     memoryCost: 2**16,
-        //     hashLength: 32,
-        //     parallelism: 1,
-        //     timeCost: 3,
-        //     saltLength: 32,
-        // });
-
         const validationRequest = {
             status: currentStatus,
             timestamp: new Date().toISOString(),
         };
 
         await ctx.stub.putState(walletAddress, Buffer.from(JSON.stringify(validationRequest)));
-
-        // // Register the client account
-        // const clientAccount = {
-        //     password: hashedPassword,
-        //     customerId: customerId,
-        // };
-
-        // await ctx.stub.putState(Buffer.from(JSON.stringify(clientAccount)));
+        return JSON.stringify(validationRequest);
     }
 
     async getRequestValidation(ctx, walletAddress) {
@@ -74,22 +51,6 @@ class KycChaincode extends Contract {
         return validationRequestAsBytes.toString('utf-8');
     }
 
-    _encryptData(data) {
-        // TODO: define enryption key and initialization vector
-        const cipher = crypto.createCipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_IV);
-        let encrypted = cipher.update(data, 'utf8', 'hex');
-        encrypted += cipher.final('hex');
-        return encrypted;
-    }
-
-    _decryptData(encryptedData) {
-        // TODO: define enryption key and initialization vector
-
-        const decipher = crypto.createDecipheriv('aes-256-cbc', process.env.ENCRYPTION_KEY, process.env.ENCRYPTION_IV);
-        let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
-    }
     async _isFinancialInstitution(ctx, institution, peerMSPID) {
         const institutionsKey = 'approvedFinancialInstitutions';
         const approvedInstitutionsBytes = await ctx.stub.getState(institutionsKey);
