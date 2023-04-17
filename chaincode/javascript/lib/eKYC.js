@@ -33,42 +33,44 @@ class KycChaincode extends Contract {
         return encryptedData;
     }
 
-    async requestValidation(ctx, walletAddress, designatedBank) {
+    async requestValidation(ctx, walletAddress, designatedBank, timetsamp) {
         const validationRequest = {
             status: 'pending',
             designatedBank: designatedBank,
-            timestamp: new Date().toISOString(),
+            timestamp: timetsamp,
         };
 
-        const compositeKey = ctx.stub.createCompositeKey('DesignatedBank~WalletAddress', [designatedBank, walletAddress]);
-        await ctx.stub.putState(compositeKey, Buffer.from(JSON.stringify(validationRequest)));
+        await ctx.stub.putState(walletAddress, Buffer.from(JSON.stringify(validationRequest)));
         return JSON.stringify(validationRequest);
     }
 
-    async getRequestValidation(ctx, walletAddress, designatedBank) {
-        const compositeKey = ctx.stub.createCompositeKey('DesignatedBank~WalletAddress', [designatedBank, walletAddress]);
-        const validationRequestAsBytes = await ctx.stub.getState(compositeKey);
+
+    async getRequestValidation(ctx, walletAddress) {
+        const validationRequestAsBytes = await ctx.stub.getState(walletAddress);
 
         if (!validationRequestAsBytes || validationRequestAsBytes.length === 0) {
-            throw new Error(`No validation request found for customer: ${walletAddress} and designated bank: ${designatedBank}`);
+            throw new Error(`No validation request found for customer: ${walletAddress}`);
         }
 
         return validationRequestAsBytes.toString('utf-8');
     }
+
     async getRequestsByDesignatedBank(ctx, designatedBank) {
-        const iterator = await ctx.stub.getPrivateDataByPartialCompositeKey('DesignatedBank~WalletAddress', [designatedBank]);
+        const iterator = await ctx.stub.getStateByRange('', '');
         const requests = [];
 
         let result = await iterator.next();
         while (!result.done) {
-            const compositeKey = result.value.key;
-            const [, walletAddress] = ctx.stub.splitCompositeKey(compositeKey);
-            const requestAsBytes = await ctx.stub.getState(compositeKey);
+            const walletAddress = result.value.key;
+            const requestAsBytes = result.value.value;
             const request = JSON.parse(requestAsBytes.toString('utf-8'));
-            requests.push({
-                walletAddress: walletAddress,
-                request: request,
-            });
+
+            if (request.designatedBank === designatedBank) {
+                requests.push({
+                    walletAddress: walletAddress,
+                    request: request,
+                });
+            }
 
             result = await iterator.next();
         }
