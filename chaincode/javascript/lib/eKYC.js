@@ -37,6 +37,7 @@ class KycChaincode extends Contract {
         const validationRequest = {
             status: 'pending',
             designatedBank: designatedBank,
+            AMLFlag: 'Unchecked',
             timestamp: timetsamp,
         };
 
@@ -65,7 +66,7 @@ class KycChaincode extends Contract {
             const requestAsBytes = result.value.value;
             const request = JSON.parse(requestAsBytes.toString('utf-8'));
 
-            if (request.designatedBank === designatedBank) {
+            if (request.designatedBank === designatedBank && request.status !== 'accepted') {
                 requests.push({
                     walletAddress: walletAddress,
                     request: request,
@@ -77,6 +78,63 @@ class KycChaincode extends Contract {
         await iterator.close();
 
         return JSON.stringify(requests);
+    }
+
+    async illicitActivities(ctx, walletAddress, illicit, financialInstitution, peerMSPID) {
+        if (!this._isFinancialInstitution(financialInstitution, peerMSPID)) {
+            throw new Error('Access denied: Only designated financial institutions can access KYC data');
+        }
+        const validationRequestAsBytes = await ctx.stub.getState(walletAddress);
+        if (!validationRequestAsBytes || validationRequestAsBytes.length === 0) {
+            throw new Error(`No validation request found for customer: ${walletAddress}`);
+        }
+        let validationRequest = JSON.parse(validationRequestAsBytes.toString('utf-8'));
+        validationRequest.AMLFlag = illicit;
+        await ctx.stub.putState(walletAddress, Buffer.from(JSON.stringify(validationRequest)));
+        return JSON.stringify(validationRequest);
+    }
+    async getAcceptedRequestsByBank(ctx, designatedBank,peerMSPID) {
+        if (!this._isFinancialInstitution(designatedBank, peerMSPID)) {
+            throw new Error('Access denied: Only designated financial institutions can access KYC data');
+        }
+        const iterator = await ctx.stub.getStateByRange('', '');
+        const acceptedRequests = [];
+
+        let result = await iterator.next();
+        while (!result.done) {
+            const walletAddress = result.value.key;
+            const requestAsBytes = result.value.value;
+            const request = JSON.parse(requestAsBytes.toString('utf-8'));
+
+            if (request.designatedBank === designatedBank && request.status === 'accepted') {
+                acceptedRequests.push({
+                    walletAddress: walletAddress,
+                    request: request,
+                });
+            }
+
+            result = await iterator.next();
+        }
+        await iterator.close();
+
+        return JSON.stringify(acceptedRequests);
+    }
+
+    async validateRequestValidation(ctx, walletAddress, financialInstitution, peerMSPID,status) {
+        if (!this._isFinancialInstitution(financialInstitution, peerMSPID)) {
+            throw new Error('Access denied: Only designated financial institutions can access KYC data');
+        }
+        const validationRequestAsBytes = await ctx.stub.getState(walletAddress);
+
+        if (!validationRequestAsBytes || validationRequestAsBytes.length === 0) {
+            throw new Error(`No validation request found for customer: ${walletAddress}`);
+        }
+
+        let validationRequest = JSON.parse(validationRequestAsBytes.toString('utf-8'));
+        validationRequest.status = status;
+
+        await ctx.stub.putState(walletAddress, Buffer.from(JSON.stringify(validationRequest)));
+        return JSON.stringify(validationRequest);
     }
 
 
