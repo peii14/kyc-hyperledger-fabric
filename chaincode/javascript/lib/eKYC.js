@@ -45,7 +45,6 @@ class KycChaincode extends Contract {
         return JSON.stringify(validationRequest);
     }
 
-
     async getRequestValidation(ctx, walletAddress) {
         const validationRequestAsBytes = await ctx.stub.getState(walletAddress);
 
