@@ -35,7 +35,8 @@ pushd ./test-network
 echo ---------------------------------MASUK DINISINIII------------------------------------
 # changed default language to js
 
-./network.sh deployCC -ccn eKYC -ccp ../chaincode/javascript/ -ccl javascript
+./network.sh deployCC -ccn eKYC -ccp ../chaincode/javascript/ -ccl javascript -ccep "OR('Org1MSP.peer','Org2MSP.peer')" -cccg /Users/gayuhkautaman/Documents/code/research/kyc-local/hyperledger-fabric/collection_config.json
+# -ccep "OR('Org1MSP.peer','Org2MSP.peer')" -cccg ../chaincode/chaincode_private/collection_config.json
 popd
 
 echo ---------------------------------SETUP SUCCESSFULLY------------------------------------
