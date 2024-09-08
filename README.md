@@ -18,10 +18,10 @@ This project showcases how Hyperledger Fabric, a permissioned blockchain, can be
 
 🛠️ **Tech Stack**
 
-•	Hyperledger Fabric: Permissioned blockchain for securing and sharing KYC data.
-•	Docker: For setting up and managing the Hyperledger Fabric network.
-•	Node.js: Server-side programming and API interaction with the blockchain.
-•	Chaincode: Smart contract implementation in Hyperledger Fabric.
+•	**Hyperledger Fabric**: Permissioned blockchain for securing and sharing KYC data.
+•	**Docker**: For setting up and managing the Hyperledger Fabric network.
+•	**Node.js**: Server-side programming and API interaction with the blockchain.
+•	**Chaincode**: Smart contract implementation in Hyperledger Fabric.
 
 🧑‍💻 **Getting Started**
 
